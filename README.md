@@ -4,12 +4,13 @@ six-seven market is a responsive storefront for clothing, accessories, gaming ge
 
 ## Features
 
-- Editorial home page, featured offers, product catalog, categories, search, sorting, and product details.
+- Editorial home page, featured offers, product catalog, categories, three-character trigram search across product names/descriptions/categories/codes, price/category filters, sorting, and product details.
 - Product gallery, color and size selection, size guide, quantity controls, and persistent basket.
 - Featured rows support mouse dragging, touch gestures, and arrow-key scrolling with hidden scrollbars.
 - Database-backed accounts, sign-in/registration, editable profile, and server-authorized admin tools.
-- Admin product creation with validated JPEG, PNG, and WebP uploads.
-- MongoDB-backed catalog and persistent order history. The server validates product IDs/options and calculates order prices and shipping.
+- Admin product creation with validated JPEG, PNG, and WebP uploads, inventory entry, and stock updates.
+- Stock-aware catalog and persistent order history. Out-of-stock products cannot be added to a basket; inventory is reserved when an order is confirmed.
+- Checkout captures legal name, phone, and email, requests a server-generated stock/price quote, then requires explicit customer confirmation before order creation.
 - Responsive styling, keyboard focus states, accessible labels, and interaction feedback.
 
 ## Stack and requirements
@@ -55,7 +56,7 @@ corepack pnpm db:setup
 corepack pnpm db:seed
 ```
 
-`db:setup` connects to the configured MongoDB database and initializes Mongoose models/indexes; MongoDB creates the database/collections when documents are written. `db:seed` idempotently creates or updates `user` and `admin` with the shared configured password and their expected roles, and adds any missing sample products. Existing orders and products are preserved. Seed reruns reset the two initial account passwords to `INITIAL_LOGIN_PASSWORD`.
+`db:setup` connects to the configured MongoDB database and initializes Mongoose models/indexes. Existing products without a stock field are migrated to zero available stock; an administrator can then enter inventory for each item. `db:seed` idempotently creates or updates `user` and `admin` with the shared configured password and their expected roles, and adds any missing sample products. Existing orders and products are preserved. Seed reruns reset the two initial account passwords to `INITIAL_LOGIN_PASSWORD`.
 
 Public registration creates only `user` accounts. Administrator access is assigned by the seed or directly by a trusted database administrator; the API never accepts a role from the browser.
 
@@ -98,18 +99,22 @@ The health route returns HTTP 503 with the current connection status if MongoDB 
 
 - `GET /api/health` — API database/index readiness.
 - `GET /api/auth/csrf`, `GET /api/auth/me`, `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `PATCH /api/auth/profile` — authentication/session/profile.
-- `GET /api/products`, `GET /api/products/:id` — public MongoDB-backed catalog.
-- `POST /api/products`, `GET /api/products/admin/list` — administrator-only product operations.
-- `GET /api/orders/my`, `POST /api/orders` — authenticated order history/creation scoped to the current account.
+- `GET /api/products`, `GET /api/products/:id`, `GET /api/categories` — public MongoDB-backed catalog and category list.
+- `POST /api/products`, `PATCH /api/products/:id/stock`, `GET /api/products/admin/list` — administrator-only product/inventory operations.
+- `GET /api/orders/my`, `GET /api/orders/:id`, `POST /api/orders/quote`, `POST /api/orders` — authenticated, user-scoped order review, lookup, and creation.
 - `GET /api/orders/admin` — administrator-only order listing.
 
 Authentication uses a signed, HttpOnly session cookie, CSRF checks for writes, bcrypt password hashes, and a role loaded from the database on every authenticated request. Product codes are generated on the server using the existing specified formula; a unique MongoDB index plus bounded duplicate-key retries handle concurrent collisions.
 
-## Orders and transaction behavior
+API errors use a consistent JSON `{ "error": "..." }` body and suitable HTTP statuses (including 400 for invalid input, 401/403 for authentication/authorization, 404 for missing records, and 409 for stale prices or stock).
 
-An order and all of its item snapshots are stored together in one MongoDB document. MongoDB writes to one document are atomic, so order creation does **not** use multi-document transactions and does not require Atlas replica-set configuration. Order creation validates that each ObjectId exists, checks the currently available color/size and price on the server, computes subtotal/shipping/total, and uses a per-user idempotency key. A user can only read their own order history; the admin endpoint is protected by a database-verified role.
+## Checkout review and inventory
 
-Orders record intent only; no payment is processed and physical inventory is not reserved.
+Checkout has three server-verified steps: the frontend requests a quote containing the cart and required legal name/phone/email; the backend validates current prices, variants, and available stock and returns a short-lived, signed quote; after the customer explicitly confirms or chooses to continue shopping, final order submission verifies that quote and rechecks the live price and stock. A stale quote is rejected with HTTP 409 so the customer can review the updated total again. The server computes all line totals, shipping, and order totals; it never trusts prices from the browser.
+
+Order creation atomically decrements each product's inventory and inserts the order in a MongoDB transaction. This requires MongoDB transaction support (Atlas clusters provide replica-set transactions). A standalone local MongoDB server cannot safely process stock-reserving orders; use Atlas or configure a local replica set for checkout testing. If a transaction cannot run, the API returns an explicit 503 error rather than accepting an order without reserving inventory. Products without migrated stock have zero availability until an administrator sets inventory. A user can only read their own order history; an administrator can read all orders.
+
+Orders record intent only; no payment is processed.
 
 ## Project structure
 

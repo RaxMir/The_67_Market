@@ -94,6 +94,11 @@ export function validateProductInput(body) {
       ? body.price.trim()
       : String(body.price ?? "")
 
+  const stockText =
+    typeof body.stock === "string"
+      ? body.stock.trim()
+      : String(body.stock ?? "")
+
   const composition =
     typeof body.composition === "string" ? body.composition.trim() : ""
 
@@ -131,6 +136,16 @@ export function validateProductInput(body) {
     )
   }
 
+  if (
+    !/^(?:0|[1-9]\d{0,6})$/.test(stockText) ||
+    Number(stockText) > 1_000_000
+  ) {
+    throw new HttpError(
+      400,
+      "Stock must be a whole number from 0 to 1,000,000.",
+    )
+  }
+
   return {
     name,
 
@@ -140,12 +155,59 @@ export function validateProductInput(body) {
 
     price: Number(priceText).toFixed(2),
 
+    stock: Number(stockText),
+
     composition: composition.slice(0, 255),
 
     tag: (tag || category).slice(0, 80),
 
     ...DEFAULT_VARIANTS[category],
   }
+}
+
+export function validateCheckoutCustomer(input) {
+  const legalName =
+    typeof input?.legalName === "string" ? input.legalName.trim() : ""
+  const email = typeof input?.email === "string" ? input.email.trim() : ""
+  const phone = typeof input?.phone === "string" ? input.phone.trim() : ""
+
+  if (legalName.length < 2 || legalName.length > 120) {
+    throw new HttpError(400, "Enter your legal name (2 to 120 characters).")
+  }
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new HttpError(400, "Enter a valid email address.")
+  }
+  if (
+    phone.length < 7 ||
+    phone.length > 40 ||
+    !/^[+()0-9.\-\s]+$/.test(phone)
+  ) {
+    throw new HttpError(400, "Enter a valid phone number.")
+  }
+
+  return { legalName, email: email.toLowerCase(), phone }
+}
+
+export function validateProductStock(input) {
+  if (
+    !(
+      typeof input === "number" ||
+      (typeof input === "string" && /^\d+$/.test(input))
+    )
+  ) {
+    throw new HttpError(
+      400,
+      "Stock must be a whole number from 0 to 1,000,000.",
+    )
+  }
+  const stock = Number(input)
+  if (!Number.isSafeInteger(stock) || stock < 0 || stock > 1_000_000) {
+    throw new HttpError(
+      400,
+      "Stock must be a whole number from 0 to 1,000,000.",
+    )
+  }
+  return stock
 }
 
 export function validateOrderItems(input) {

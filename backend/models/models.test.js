@@ -38,6 +38,8 @@ test("products validate storefront data and enforce unique product codes", async
 
     price: 12.5,
 
+    stock: 8,
+
     productCode: "0116161205A1",
 
     images: ["/uploads/sample.jpg"],
@@ -91,6 +93,12 @@ test("orders keep all line items in one validated document", async () => {
     shipping: 0,
 
     total: 25,
+
+    customer: {
+      legalName: "Sample Customer",
+      email: "customer@example.com",
+      phone: "+1 555 555 5555",
+    },
 
     idempotencyKey: "123e4567-e89b-42d3-a456-426614174000",
   })

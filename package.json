@@ -10,7 +10,7 @@
     "start:api": "node backend/server.js",
     "db:setup": "node backend/scripts/setup-db.js",
     "db:seed": "node backend/scripts/seed.js",
-    "test:backend": "node --test backend/auth/accounts.test.js backend/models/models.test.js backend/product-code.test.js backend/validation.test.js",
+    "test:backend": "node --test backend/auth/accounts.test.js backend/models/models.test.js backend/order-quote.test.js backend/product-code.test.js backend/validation.test.js",
     "build": "vite build",
     "preview": "vite preview",
     "format": "oxfmt"

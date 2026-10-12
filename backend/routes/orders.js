@@ -1,20 +1,25 @@
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto"
+
+import mongoose from "mongoose"
+
 import { Router } from "express"
+
+import { config } from "../config.js"
 
 import { asyncRoute, HttpError } from "../errors.js"
 
-import { requireAuth, requireRole } from "../security.js"
+import { requireAuth, requireRole, requireCsrf } from "../security.js"
 
-import {
-  centsToMoney,
-  moneyToCents,
-  validateOrderItems,
-} from "../validation.js"
+import { centsToMoney, validateOrderItems } from "../validation.js"
 
+import { calculateOrderQuote } from "../order-quote.js"
 import Order from "../models/Order.js"
 
 import Product from "../models/Product.js"
 
 const router = Router()
+
+const QUOTE_TTL_MS = 5 * 60 * 1000
 
 function validUuid(value) {
   return (
@@ -32,6 +37,8 @@ function mapOrder(order) {
     userId: String(order.userId),
 
     status: order.status,
+
+    customer: order.customer,
 
     subtotal: Number(order.subtotal),
 
@@ -63,24 +70,160 @@ function mapOrder(order) {
   }
 }
 
+function quoteSignature(encoded) {
+  return createHmac("sha256", config.sessionSecret)
+
+    .update(`order-quote:${encoded}`)
+
+    .digest("base64url")
+}
+
+function createQuoteToken(payload) {
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url")
+
+  return `${encoded}.${quoteSignature(encoded)}`
+}
+
+function readQuoteToken(token, userId) {
+  if (typeof token !== "string") {
+    throw new HttpError(400, "Review the order before confirming it.")
+  }
+
+  const separator = token.lastIndexOf(".")
+
+  if (separator < 1) {
+    throw new HttpError(400, "The order review is invalid. Review it again.")
+  }
+
+  const encoded = token.slice(0, separator)
+
+  const signature = Buffer.from(token.slice(separator + 1))
+
+  const expected = Buffer.from(quoteSignature(encoded))
+
+  if (
+    signature.length !== expected.length ||
+    !timingSafeEqual(signature, expected)
+  ) {
+    throw new HttpError(400, "The order review is invalid. Review it again.")
+  }
+
+  let payload
+
+  try {
+    payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"))
+  } catch {
+    throw new HttpError(400, "The order review is invalid. Review it again.")
+  }
+
+  if (
+    payload.userId !== String(userId) ||
+    !validUuid(payload.quoteId) ||
+    !Number.isSafeInteger(payload.expiresAt) ||
+    payload.expiresAt <= Date.now() ||
+    !Array.isArray(payload.items) ||
+    !payload.customer
+  ) {
+    throw new HttpError(
+      409,
+
+      "The order review expired. Review your order again.",
+    )
+  }
+
+  return payload
+}
+
+async function buildQuote(userId, inputItems, inputCustomer, session) {
+  const items = validateOrderItems(inputItems)
+
+  const ids = [...new Set(items.map((item) => item.productId))]
+
+  let query = Product.find({ _id: { $in: ids } })
+
+  if (session) query = query.session(session)
+
+  const products = await query.lean()
+
+  return calculateOrderQuote(userId, items, inputCustomer, products)
+}
+
+router.post(
+  "/quote",
+
+  requireAuth,
+
+  requireCsrf,
+
+  asyncRoute(async (request, response) => {
+    const quote = await buildQuote(
+      request.user.id,
+
+      request.body?.items,
+
+      request.body?.customer,
+    )
+
+    const expiresAt = Date.now() + QUOTE_TTL_MS
+
+    const token = createQuoteToken({
+      ...quote,
+
+      stockByProduct: undefined,
+
+      quoteId: randomUUID(),
+
+      expiresAt,
+    })
+
+    response.json({
+      quote: {
+        token,
+
+        expiresAt,
+
+        customer: quote.customer,
+
+        items: quote.items.map((item) => ({
+          productId: item.productId,
+
+          name: item.name,
+
+          price: Number(centsToMoney(item.priceCents)),
+
+          quantity: item.quantity,
+
+          lineTotal: Number(centsToMoney(item.lineTotalCents)),
+
+          color: item.color,
+
+          size: item.size,
+        })),
+
+        subtotal: Number(centsToMoney(quote.subtotalCents)),
+
+        shipping: Number(centsToMoney(quote.shippingCents)),
+
+        total: Number(centsToMoney(quote.totalCents)),
+      },
+    })
+  }),
+)
+
 router.post(
   "/",
 
   requireAuth,
 
+  requireCsrf,
+
   asyncRoute(async (request, response) => {
-    const items = validateOrderItems(request.body?.items)
-
-    const idempotencyKey = request.get("idempotency-key")
-
-    if (!validUuid(idempotencyKey)) {
-      throw new HttpError(400, "A valid Idempotency-Key header is required.")
-    }
+    const quote = readQuoteToken(request.body?.quoteToken, request.user.id)
 
     const existing = await Order.findOne({
       userId: request.user.id,
 
-      idempotencyKey,
+      idempotencyKey: quote.quoteId,
     }).lean()
 
     if (existing) {
@@ -89,102 +232,168 @@ router.post(
       return
     }
 
-    const ids = [...new Set(items.map((item) => item.productId))]
+    const session = await mongoose.startSession()
 
-    const products = await Product.find({ _id: { $in: ids } }).lean()
+    let order
 
-    const productsById = new Map(
-      products.map((product) => [String(product._id), product]),
-    )
+    try {
+      await session.withTransaction(async () => {
+        const latest = await buildQuote(
+          request.user.id,
 
-    let subtotalCents = 0
+          quote.items.map((item) => ({
+            productId: item.productId,
 
-    const orderItems = items.map((item) => {
-      const product = productsById.get(item.productId)
+            color: item.color,
 
-      if (!product) {
-        throw new HttpError(
-          400,
-          "A product in your basket is no longer available.",
+            size: item.size,
+
+            quantity: item.quantity,
+          })),
+
+          quote.customer,
+
+          session,
         )
+
+        const priceChanged = latest.items.some((item, index) => {
+          const quoted = quote.items[index]
+
+          return (
+            !quoted ||
+            item.productId !== quoted.productId ||
+            item.priceCents !== quoted.priceCents ||
+            item.quantity !== quoted.quantity ||
+            item.color !== quoted.color ||
+            item.size !== quoted.size
+          )
+        })
+
+        if (
+          priceChanged ||
+          latest.totalCents !== quote.totalCents ||
+          latest.subtotalCents !== quote.subtotalCents
+        ) {
+          throw new HttpError(
+            409,
+
+            "Prices or availability changed. Review the updated order before confirming.",
+          )
+        }
+
+        for (const [productId, quantity] of latest.stockByProduct) {
+          const quotedLine = latest.items.find(
+            (item) => item.productId === productId,
+          )
+
+          const reserved = await Product.findOneAndUpdate(
+            {
+              _id: productId,
+
+              stock: { $gte: quantity },
+
+              price: Number(centsToMoney(quotedLine.priceCents)),
+            },
+
+            { $inc: { stock: -quantity } },
+
+            { new: true, session, runValidators: true },
+          )
+
+          if (!reserved) {
+            throw new HttpError(
+              409,
+
+              "Stock or price changed. Review the updated order before confirming.",
+            )
+          }
+        }
+
+        const orderItems = latest.items.map((item) => ({
+          productId: item.productId,
+
+          productCode: item.productCode,
+
+          name: item.name,
+
+          price: Number(centsToMoney(item.priceCents)),
+
+          quantity: item.quantity,
+
+          lineTotal: Number(centsToMoney(item.lineTotalCents)),
+
+          color: item.color,
+
+          size: item.size,
+        }))
+
+        const [created] = await Order.create(
+          [
+            {
+              userId: request.user.id,
+
+              customer: latest.customer,
+
+              items: orderItems,
+
+              subtotal: Number(centsToMoney(latest.subtotalCents)),
+
+              shipping: Number(centsToMoney(latest.shippingCents)),
+
+              total: Number(centsToMoney(latest.totalCents)),
+
+              status: "pending",
+
+              idempotencyKey: quote.quoteId,
+            },
+          ],
+
+          { session },
+        )
+
+        order = created
+      })
+    } catch (error) {
+      if (error.code === 11000) {
+        const duplicate = await Order.findOne({
+          userId: request.user.id,
+
+          idempotencyKey: quote.quoteId,
+        }).lean()
+
+        if (duplicate) {
+          response
+
+            .status(200)
+
+            .json({ order: mapOrder(duplicate), duplicate: true })
+
+          return
+        }
       }
 
       if (
-        !product.colors.some((color) => color.name === item.color) ||
-        !product.sizes.includes(item.size)
+        error.code === 20 ||
+        error.code === 303 ||
+        /transaction numbers are only allowed|does not support transactions/i.test(
+          error.message ?? "",
+        )
       ) {
         throw new HttpError(
-          400,
-          "A selected product option is no longer available.",
+          503,
+
+          "Safe stock reservation requires MongoDB transactions. Use Atlas or a replica-set deployment.",
+
+          { cause: error },
         )
       }
 
-      const priceCents = moneyToCents(product.price)
-
-      const lineTotalCents = priceCents * item.quantity
-
-      subtotalCents += lineTotalCents
-
-      return {
-        productId: product._id,
-
-        productCode: product.productCode,
-
-        name: product.name,
-
-        price: Number(centsToMoney(priceCents)),
-
-        quantity: item.quantity,
-
-        lineTotal: Number(centsToMoney(lineTotalCents)),
-
-        color: item.color,
-
-        size: item.size,
-      }
-    })
-
-    if (subtotalCents > 999_999_999_999) {
-      throw new HttpError(400, "The order total exceeds the supported limit.")
+      throw error
+    } finally {
+      await session.endSession()
     }
 
-    const shippingCents = subtotalCents >= 15_000 ? 0 : 1_200
-
-    const totalCents = subtotalCents + shippingCents
-
-    const orderData = {
-      userId: request.user.id,
-
-      items: orderItems,
-
-      subtotal: Number(centsToMoney(subtotalCents)),
-
-      shipping: Number(centsToMoney(shippingCents)),
-
-      total: Number(centsToMoney(totalCents)),
-
-      status: "pending",
-
-      idempotencyKey,
-    }
-
-    try {
-      const order = await Order.create(orderData)
-
-      response.status(201).json({ order: mapOrder(order), duplicate: false })
-    } catch (error) {
-      if (error.code !== 11000) throw error
-
-      const duplicate = await Order.findOne({
-        userId: request.user.id,
-
-        idempotencyKey,
-      }).lean()
-
-      if (!duplicate) throw error
-
-      response.status(200).json({ order: mapOrder(duplicate), duplicate: true })
-    }
+    response.status(201).json({ order: mapOrder(order), duplicate: false })
   }),
 )
 
@@ -221,6 +430,31 @@ router.get(
       .lean()
 
     response.json({ orders: orders.map(mapOrder) })
+  }),
+)
+
+router.get(
+  "/:id",
+
+  requireAuth,
+
+  asyncRoute(async (request, response) => {
+    if (!/^[a-f\d]{24}$/i.test(request.params.id)) {
+      throw new HttpError(400, "Order ID must be a valid ID.")
+    }
+
+    const order = await Order.findById(request.params.id).lean()
+
+    if (!order) throw new HttpError(404, "Order not found.")
+
+    if (
+      String(order.userId) !== String(request.user.id) &&
+      request.user.role !== "admin"
+    ) {
+      throw new HttpError(403, "You do not have permission to view this order.")
+    }
+
+    response.json({ order: mapOrder(order) })
   }),
 )
 

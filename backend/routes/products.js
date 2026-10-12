@@ -15,7 +15,7 @@ import {
   saveVerifiedImages,
 } from "../uploads.js"
 
-import { validateProductInput } from "../validation.js"
+import { validateProductInput, validateProductStock } from "../validation.js"
 
 import Product from "../models/Product.js"
 
@@ -32,6 +32,8 @@ function mapProduct(product) {
     description: product.description,
 
     price: Number(product.price),
+
+    stock: Number(product.stock ?? 0),
 
     type: product.category,
 
@@ -80,6 +82,31 @@ router.get(
       .lean()
 
     response.json({ products: products.map(mapProduct) })
+  }),
+)
+
+router.patch(
+  "/:id/stock",
+
+  requireAuth,
+
+  requireRole("admin"),
+
+  asyncRoute(async (request, response) => {
+    if (!/^[a-f\d]{24}$/i.test(request.params.id)) {
+      throw new HttpError(400, "Product ID must be a valid ID.")
+    }
+
+    const stock = validateProductStock(request.body?.stock)
+    const product = await Product.findByIdAndUpdate(
+      request.params.id,
+      { $set: { stock } },
+      { new: true, runValidators: true },
+    ).lean()
+
+    if (!product) throw new HttpError(404, "Product not found.")
+
+    response.json({ product: mapProduct(product) })
   }),
 )
 

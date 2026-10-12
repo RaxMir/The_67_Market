@@ -16,6 +16,12 @@ export type Account = {
   city: string
 }
 
+export type CheckoutCustomer = {
+  legalName: string
+  email: string
+  phone: string
+}
+
 export type StoreProduct = {
   id: string
   productCode: string
@@ -23,6 +29,7 @@ export type StoreProduct = {
   type: ProductCategory
   category: ProductCategory
   price: number
+  stock: number
   colors: ProductColor[]
   sizes: string[]
   images: string[]
@@ -49,6 +56,7 @@ export type StoreOrder = {
   id: string
   userId: string
   status: "pending" | "processing" | "shipped" | "delivered" | "cancelled"
+  customer: CheckoutCustomer
   subtotal: number
   shipping: number
   total: number
@@ -60,6 +68,7 @@ export type ProductDraft = {
   name: string
   description: string
   price: string
+  stock: string
   category: string
   composition: string
   tag: string
@@ -71,6 +80,24 @@ export type OrderDraftItem = {
   quantity: number
   color: string
   size: string
+}
+
+export type StoreOrderQuote = {
+  token: string
+  expiresAt: number
+  customer: CheckoutCustomer
+  items: Array<{
+    productId: string
+    name: string
+    price: number
+    quantity: number
+    lineTotal: number
+    color: string
+    size: string
+  }>
+  subtotal: number
+  shipping: number
+  total: number
 }
 
 let csrfToken = ""
@@ -218,10 +245,24 @@ export const api = {
     return result.products
   },
 
+  async getCategories() {
+    const result = await apiRequest<{ categories: ProductCategory[] }>(
+      "/api/categories",
+    )
+    return result.categories
+  },
+
   async getMyOrders() {
     const result = await apiRequest<{ orders: StoreOrder[] }>("/api/orders/my")
 
     return result.orders
+  },
+
+  async getOrder(orderId: string) {
+    const result = await apiRequest<{ order: StoreOrder }>(
+      `/api/orders/${encodeURIComponent(orderId)}`,
+    )
+    return result.order
   },
 
   async getAdminOrders() {
@@ -240,6 +281,8 @@ export const api = {
     body.set("description", draft.description)
 
     body.set("price", draft.price)
+
+    body.set("stock", draft.stock)
 
     body.set("category", draft.category)
 
@@ -261,23 +304,35 @@ export const api = {
     return result.product
   },
 
-  async createOrder(
-    items: OrderDraftItem[],
+  async updateProductStock(productId: string, stock: number) {
+    const result = await apiRequest<{ product: StoreProduct }>(
+      `/api/products/${encodeURIComponent(productId)}/stock`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ stock }),
+      },
+    )
+    return result.product
+  },
 
-    idempotencyKey: string,
-  ) {
+  async quoteOrder(items: OrderDraftItem[], customer: CheckoutCustomer) {
+    const result = await apiRequest<{
+      quote: StoreOrderQuote
+    }>("/api/orders/quote", {
+      method: "POST",
+      body: JSON.stringify({ items, customer }),
+    })
+    return result
+  },
+
+  async createOrder(quoteToken: string) {
     const result = await apiRequest<{
       order: StoreOrder
-
       duplicate: boolean
     }>("/api/orders", {
       method: "POST",
-
-      headers: { "Idempotency-Key": idempotencyKey },
-
-      body: JSON.stringify({ items }),
+      body: JSON.stringify({ quoteToken }),
     })
-
     return result
   },
 }

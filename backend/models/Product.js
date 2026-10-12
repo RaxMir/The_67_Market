@@ -8,6 +8,15 @@ const productSchema = new mongoose.Schema(
 
     price: { type: Number, required: true, min: 0, max: 99_999_999.99 },
 
+    stock: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+      max: 1_000_000,
+      validate: Number.isSafeInteger,
+    },
+
     productCode: { type: String, required: true, unique: true, index: true },
 
     images: {

@@ -21,6 +21,7 @@ import {
 
 import { HttpError, errorHandler } from "./errors.js"
 
+import { CATEGORIES } from "./validation.js"
 import User from "./models/User.js"
 
 import Product from "./models/Product.js"
@@ -74,6 +75,10 @@ app.get(
     })
   },
 )
+
+app.get("/api/categories", (request, response) => {
+  response.json({ categories: CATEGORIES })
+})
 
 app.use(
   "/uploads",

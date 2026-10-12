@@ -11,7 +11,9 @@ import {
   getApiUrl,
   initializeApi,
   type Account,
+  type CheckoutCustomer,
   type ProductCategory,
+  type StoreOrderQuote,
   type StoreOrder,
   type StoreProduct,
 } from "./api"
@@ -46,11 +48,6 @@ interface CartProductEntry {
   product: Product
 }
 
-interface CheckoutAttempt {
-  signature: string
-  key: string
-}
-
 type Product = StoreProduct
 
 type CartItem = {
@@ -69,6 +66,59 @@ type ProfileData = {
   phone: string
   address: string
   city: string
+}
+
+function normalizeSearchText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+}
+
+function productSearchScore(product: Product, query: string) {
+  const terms = normalizeSearchText(query)
+    .trim()
+    .split(/\s+/)
+    .filter((term) => term.length >= 3)
+  if (!terms.length) return 1
+
+  const searchable = normalizeSearchText(
+    [
+      product.name,
+      product.description,
+      product.type,
+      product.category,
+      product.tag,
+      product.productCode,
+      product.composition,
+    ].join(" "),
+  )
+  const productTrigrams = new Set(
+    searchable
+      .split(/\s+/)
+      .flatMap((word) =>
+        Array.from({ length: Math.max(0, word.length - 2) }, (_, index) =>
+          word.slice(index, index + 3),
+        ),
+      ),
+  )
+  let score = 0
+  for (const term of terms) {
+    if (searchable.includes(term)) {
+      score += 1
+      continue
+    }
+    const trigrams = Array.from({ length: term.length - 2 }, (_, index) =>
+      term.slice(index, index + 3),
+    )
+    const matches = trigrams.filter((trigram) =>
+      productTrigrams.has(trigram),
+    ).length
+    const termScore = matches / trigrams.length
+    if (termScore < 0.6) return 0
+    score += termScore
+  }
+  return score / terms.length
 }
 
 const categories: Category[] = [
@@ -398,19 +448,63 @@ function MainMenu({
   products,
   productsLoading,
   productsError,
+  availableCategories,
+  onRetry,
   openCatalog,
   openProduct,
 }: {
   products: Product[]
   productsLoading: boolean
   productsError: string
+  availableCategories: ProductCategory[]
+  onRetry: () => void
   openCatalog: (category: Category) => void
   openProduct: (id: string) => void
 }) {
+  const [query, setQuery] = useState("")
+  const [selectedCategory, setSelectedCategory] =
+    useState<ProductCategory | "">("")
+  const [minPrice, setMinPrice] = useState("")
+  const [maxPrice, setMaxPrice] = useState("")
+  const hasSearch = query.trim().length >= 3
+  const isFiltered =
+    hasSearch ||
+    Boolean(selectedCategory) ||
+    Boolean(minPrice) ||
+    Boolean(maxPrice)
+  const matchedProducts = useMemo(() => {
+    return products
+      .map((product) => ({
+        product,
+        score: hasSearch ? productSearchScore(product, query) : 1,
+      }))
+      .filter(({ product, score }) => {
+        const low = minPrice === "" ? null : Number(minPrice)
+        const high = maxPrice === "" ? null : Number(maxPrice)
+        return (
+          score > 0 &&
+          (!selectedCategory || product.category === selectedCategory) &&
+          (low === null || product.price >= low) &&
+          (high === null || product.price <= high)
+        )
+      })
+      .sort((left, right) =>
+        hasSearch && left.score !== right.score
+          ? right.score - left.score
+          : Number(right.product.isFeatured) - Number(left.product.isFeatured),
+      )
+      .map(({ product }) => product)
+  }, [hasSearch, maxPrice, minPrice, products, query, selectedCategory])
   const featuredProducts = products.filter((product) => product.isFeatured)
   const displayedProducts = (
-    featuredProducts.length ? featuredProducts : products
-  ).slice(0, 4)
+    isFiltered
+      ? matchedProducts
+      : featuredProducts.length
+        ? featuredProducts
+        : products
+  ).slice(0, isFiltered ? 12 : 4)
+  const invalidPriceRange =
+    minPrice !== "" && maxPrice !== "" && Number(minPrice) > Number(maxPrice)
 
   return (
     <main className="main-menu">
@@ -461,26 +555,93 @@ function MainMenu({
       <section className="single-products">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">One good thing at a time</p>
-            <h2>Single picks</h2>
+            <p className="eyebrow">Find your next favorite</p>
+            <h2>Shop the collection</h2>
           </div>
           <p className="single-products-intro">
-            Straightforward products, short descriptions, and clear prices.
+            Search names, descriptions, categories, and product codes. Search
+            starts at three characters.
           </p>
         </div>
+        <div className="store-search-controls">
+          <label className="store-search">
+            <span className="sr-only">Search products</span>
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search products (3+ characters)"
+            />
+          </label>
+          <label>
+            <span className="sr-only">Filter by category</span>
+            <select
+              value={selectedCategory}
+              onChange={(event) =>
+                setSelectedCategory(event.target.value as ProductCategory | "")
+              }
+            >
+              <option value="">All categories</option>
+              {availableCategories.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span className="sr-only">Minimum price</span>
+            <input
+              aria-label="Minimum price"
+              type="number"
+              min="0"
+              step="0.01"
+              value={minPrice}
+              onChange={(event) => setMinPrice(event.target.value)}
+              placeholder="Min price"
+            />
+          </label>
+          <label>
+            <span className="sr-only">Maximum price</span>
+            <input
+              aria-label="Maximum price"
+              type="number"
+              min="0"
+              step="0.01"
+              value={maxPrice}
+              onChange={(event) => setMaxPrice(event.target.value)}
+              placeholder="Max price"
+            />
+          </label>
+        </div>
+        {query.trim().length > 0 && query.trim().length < 3 && (
+          <p className="form-hint" role="status">
+            Enter at least 3 characters to search.
+          </p>
+        )}
+        {invalidPriceRange && (
+          <p className="form-error" role="alert">
+            Minimum price must not be higher than maximum price.
+          </p>
+        )}
         {productsError ? (
           <div className="empty-state">
             <h3>Products are unavailable</h3>
             <p>{productsError}</p>
+            <button className="text-link" onClick={onRetry}>
+              Try again
+            </button>
           </div>
         ) : productsLoading ? (
           <p className="store-message" role="status">
             Loading products…
           </p>
-        ) : displayedProducts.length ? (
+        ) : !invalidPriceRange && displayedProducts.length ? (
           <DragScrollArea
-            className="single-product-list"
-            label="Featured products. Scroll horizontally to explore."
+            className={`single-product-list ${
+              isFiltered ? "search-results" : ""
+            }`}
+            label="Products. Scroll horizontally to explore."
           >
             {displayedProducts.map((product, index) => (
               <button
@@ -498,6 +659,11 @@ function MainMenu({
                   <span>{product.description}</span>
                 </span>
                 <b>{money(product.price)}</b>
+                <small className="stock-label">
+                  {product.stock > 0
+                    ? `${product.stock} available`
+                    : "Out of stock"}
+                </small>
                 <span className="single-arrow">
                   <Icon name="arrow" />
                 </span>
@@ -506,9 +672,13 @@ function MainMenu({
           </DragScrollArea>
         ) : (
           <div className="empty-state">
-            <h3>No products yet</h3>
+            <h3>
+              {products.length ? "No matching products" : "No products yet"}
+            </h3>
             <p>
-              New products will appear here when they are added to the store.
+              {products.length
+                ? "Adjust the search or filters to find another product."
+                : "New products will appear here when they are added to the store."}
             </p>
           </div>
         )}
@@ -563,6 +733,9 @@ function ProductCard({
         <div>
           <span>{product.type}</span>
           <strong>{product.name}</strong>
+          <small className="stock-label">
+            {product.stock > 0 ? `${product.stock} available` : "Out of stock"}
+          </small>
         </div>
         <b>{money(product.price)}</b>
       </div>
@@ -593,18 +766,24 @@ function Catalog({
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [query, setQuery] = useState("")
+  const [minPrice, setMinPrice] = useState("")
+  const [maxPrice, setMaxPrice] = useState("")
   const visibleProducts = useMemo(() => {
     const filtered = products.filter((product) => {
       const matchesCategory =
         category === "All pieces" || product.type === category
-      const haystack =
-        `${product.name} ${product.type} ${product.tag} ${product.productCode}`.toLowerCase()
-      return matchesCategory && haystack.includes(query.trim().toLowerCase())
+      const matchesQuery =
+        query.trim().length < 3 || productSearchScore(product, query) > 0
+      const matchesMin = minPrice === "" || product.price >= Number(minPrice)
+      const matchesMax = maxPrice === "" || product.price <= Number(maxPrice)
+      return matchesCategory && matchesQuery && matchesMin && matchesMax
     })
     if (sort === "high") return [...filtered].sort((a, b) => b.price - a.price)
     if (sort === "low") return [...filtered].sort((a, b) => a.price - b.price)
     return filtered
-  }, [category, query, sort])
+  }, [category, maxPrice, minPrice, query, sort])
+  const invalidPriceRange =
+    minPrice !== "" && maxPrice !== "" && Number(minPrice) > Number(maxPrice)
 
   const sortLabel =
     sort === "high"
@@ -687,6 +866,31 @@ function Catalog({
               <Icon name="minus" />
             </button>
           </div>
+          <div className="price-filters">
+            <p>Price range</p>
+            <label>
+              <span className="sr-only">Minimum price</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="Min"
+                value={minPrice}
+                onChange={(event) => setMinPrice(event.target.value)}
+              />
+            </label>
+            <label>
+              <span className="sr-only">Maximum price</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="Max"
+                value={maxPrice}
+                onChange={(event) => setMaxPrice(event.target.value)}
+              />
+            </label>
+          </div>
           {categories.map((item) => (
             <button
               className={category === item ? "category active" : "category"}
@@ -716,6 +920,11 @@ function Catalog({
             <div className="empty-state catalog-empty" role="alert">
               <h3>Could not load products</h3>
               <p>{productsError}</p>
+            </div>
+          ) : invalidPriceRange ? (
+            <div className="empty-state catalog-empty" role="alert">
+              <h3>Invalid price range</h3>
+              <p>Minimum price must not be higher than maximum price.</p>
             </div>
           ) : visibleProducts.length ? (
             visibleProducts.map((product) => (
@@ -770,7 +979,7 @@ function ProductDetail({
     setQuantity(1)
     setAdded(false)
     addedRef.current = false
-  }, [product.id])
+  }, [product.id, product.stock])
 
   const related = products.filter(
     (item) => item.id !== product.id && item.type === product.type,
@@ -822,6 +1031,11 @@ function ProductDetail({
           </p>
           <h1>{product.name}</h1>
           <p className="price">{money(product.price)}</p>
+          <p className="stock-label detail-stock">
+            {product.stock > 0
+              ? `${product.stock} available`
+              : "Currently out of stock"}
+          </p>
           <p className="product-code">Product code · {product.productCode}</p>
           <p className="description">{product.description}</p>
           <div className="choice-block">
@@ -875,7 +1089,7 @@ function ProductDetail({
             <div className="qty-controls">
               <button
                 aria-label="Decrease quantity"
-                disabled={added || quantity <= 1}
+                disabled={added || quantity <= 1 || product.stock <= 0}
                 onClick={() => setQuantity((value) => Math.max(1, value - 1))}
               >
                 <Icon name="minus" size={16} />
@@ -883,8 +1097,10 @@ function ProductDetail({
               <span>{quantity}</span>
               <button
                 aria-label="Increase quantity"
-                disabled={added || quantity >= 99}
-                onClick={() => setQuantity((value) => Math.min(99, value + 1))}
+                disabled={added || quantity >= Math.min(99, product.stock)}
+                onClick={() =>
+                  setQuantity((value) => Math.min(99, product.stock, value + 1))
+                }
               >
                 <Icon name="plus" size={16} />
               </button>
@@ -892,6 +1108,7 @@ function ProductDetail({
           </div>
           <button
             className="order-button"
+            disabled={product.stock <= 0}
             onClick={() => {
               if (addedRef.current) {
                 setPage("basket")
@@ -902,7 +1119,13 @@ function ProductDetail({
               setAdded(true)
             }}
           >
-            <span>{added ? "Go to basket" : "Add to basket"}</span>
+            <span>
+              {product.stock <= 0
+                ? "Unavailable"
+                : added
+                  ? "Go to basket"
+                  : "Add to basket"}
+            </span>
             <span>{money(product.price * quantity)}</span>
           </button>
           <div className="detail-notes">
@@ -1631,24 +1854,31 @@ function OrderList({ orders, empty }: OrderListProps) {
 function Basket({
   products,
   isLoggedIn,
+  customerDefaults,
   items,
   setItems,
   setPage,
   openProduct,
   placeOrder,
+  requestOrderQuote,
   placingOrder,
 }: {
   products: Product[]
   isLoggedIn: boolean
+  customerDefaults: CheckoutCustomer
   items: CartItem[]
   setItems: (items: CartItem[]) => void
   setPage: (page: Page) => void
   openProduct: (id: string) => void
-  placeOrder: () => Promise<Order | null>
+  placeOrder: (quote: StoreOrderQuote) => Promise<Order>
+  requestOrderQuote: (customer: CheckoutCustomer) => Promise<StoreOrderQuote>
   placingOrder: boolean
 }) {
   const [placedOrder, setPlacedOrder] = useState<Order | null>(null)
   const [checkoutError, setCheckoutError] = useState("")
+  const [customer, setCustomer] = useState(customerDefaults)
+  const [quote, setQuote] = useState<StoreOrderQuote | null>(null)
+  const [reviewPending, setReviewPending] = useState(false)
   const availableItems = items
     .map((item) => ({ item, product: productById(products, item.productId) }))
     .filter((entry): entry is CartProductEntry => Boolean(entry.product))
@@ -1659,6 +1889,49 @@ function Basket({
   const shipping = subtotal >= 150 || subtotal === 0 ? 0 : 12
   const total = subtotal + shipping
   const count = items.reduce((sum, item) => sum + item.quantity, 0)
+  const unavailableItems = items.filter(
+    (item) => !productById(products, item.productId),
+  )
+
+  useEffect(() => {
+    setCustomer((current) => ({
+      legalName: current.legalName || customerDefaults.legalName,
+      email: current.email || customerDefaults.email,
+      phone: current.phone || customerDefaults.phone,
+    }))
+  }, [
+    customerDefaults.email,
+    customerDefaults.legalName,
+    customerDefaults.phone,
+  ])
+
+  const reviewOrder = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setCheckoutError("")
+    setReviewPending(true)
+    try {
+      setQuote(await requestOrderQuote(customer))
+    } catch (error) {
+      setCheckoutError(
+        error instanceof Error ? error.message : "Could not review this order.",
+      )
+    } finally {
+      setReviewPending(false)
+    }
+  }
+
+  const confirmOrder = async () => {
+    if (!quote) return
+    setCheckoutError("")
+    try {
+      setPlacedOrder(await placeOrder(quote))
+    } catch (error) {
+      setQuote(null)
+      setCheckoutError(
+        error instanceof Error ? error.message : "Could not submit your order.",
+      )
+    }
+  }
 
   const updateQty = (key: string, quantity: number) => {
     if (quantity < 1) {
@@ -1682,6 +1955,12 @@ function Basket({
         </div>
       ) : items.length ? (
         <>
+          {unavailableItems.length > 0 && (
+            <p className="form-error" role="alert">
+              Some basket products are no longer available. Remove them before
+              checkout.
+            </p>
+          )}
           {availableItems.map(({ item, product }) => {
             return (
               <div className="basket-card" key={item.key}>
@@ -1706,9 +1985,12 @@ function Basket({
                     <span>{item.quantity}</span>
                     <button
                       aria-label="Increase quantity"
-                      disabled={item.quantity >= 99}
+                      disabled={item.quantity >= Math.min(99, product.stock)}
                       onClick={() =>
-                        updateQty(item.key, Math.min(99, item.quantity + 1))
+                        updateQty(
+                          item.key,
+                          Math.min(99, product.stock, item.quantity + 1),
+                        )
                       }
                     >
                       <Icon name="plus" size={16} />
@@ -1745,32 +2027,140 @@ function Basket({
               <b>{money(total)}</b>
             </p>
           </div>
-          <button
-            className="order-button"
-            disabled={placingOrder}
-            onClick={async () => {
-              setCheckoutError("")
-              try {
-                const order = await placeOrder()
-                if (order) setPlacedOrder(order)
-              } catch (error) {
-                setCheckoutError(
-                  error instanceof Error
-                    ? error.message
-                    : "Could not submit your order.",
-                )
-              }
-            }}
-          >
-            <span>
-              {placingOrder
-                ? "Submitting…"
-                : isLoggedIn
-                  ? "Submit order"
-                  : "Sign in to place order"}
-            </span>
-            <span>{money(total)}</span>
-          </button>
+          {isLoggedIn ? (
+            quote ? (
+              <section
+                className="order-confirmation"
+                aria-labelledby="confirm-order-title"
+              >
+                <p className="eyebrow">Final review</p>
+                <h2 id="confirm-order-title">
+                  Would you like to place this order?
+                </h2>
+                <p>
+                  Confirm to reserve the reviewed quantities at the prices
+                  shown. Or continue browsing; nothing has been ordered yet.
+                </p>
+                <p className="quote-customer">
+                  {quote.customer.legalName} · {quote.customer.email} ·{" "}
+                  {quote.customer.phone}
+                </p>
+                <div className="quote-lines">
+                  {quote.items.map((item, index) => (
+                    <p
+                      key={`${item.productId}-${item.color}-${item.size}-${index}`}
+                    >
+                      <span>
+                        {item.name} · {item.color} · {item.size} ×{" "}
+                        {item.quantity}
+                      </span>
+                      <b>{money(item.lineTotal)}</b>
+                    </p>
+                  ))}
+                  <p>
+                    <span>Subtotal</span>
+                    <b>{money(quote.subtotal)}</b>
+                  </p>
+                  <p>
+                    <span>Delivery</span>
+                    <b>
+                      {quote.shipping ? money(quote.shipping) : "Complimentary"}
+                    </b>
+                  </p>
+                  <p className="total">
+                    <span>Total</span>
+                    <b>{money(quote.total)}</b>
+                  </p>
+                </div>
+                <div className="confirmation-actions">
+                  <button
+                    className="order-button"
+                    disabled={placingOrder}
+                    onClick={() => void confirmOrder()}
+                  >
+                    <span>
+                      {placingOrder ? "Confirming…" : "Yes, place order"}
+                    </span>
+                    <span>{money(quote.total)}</span>
+                  </button>
+                  <button
+                    className="ghost-button"
+                    disabled={placingOrder}
+                    onClick={() => {
+                      setQuote(null)
+                      setPage("catalog")
+                    }}
+                  >
+                    Continue browsing
+                  </button>
+                </div>
+              </section>
+            ) : (
+              <form className="checkout-contact" onSubmit={reviewOrder}>
+                <p className="eyebrow">Delivery contact</p>
+                <h2>Who is placing this order?</h2>
+                <label>
+                  Legal name
+                  <input
+                    autoComplete="name"
+                    maxLength={120}
+                    required
+                    value={customer.legalName}
+                    onChange={(event) =>
+                      setCustomer({
+                        ...customer,
+                        legalName: event.target.value,
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Phone number
+                  <input
+                    autoComplete="tel"
+                    type="tel"
+                    minLength={7}
+                    maxLength={40}
+                    required
+                    value={customer.phone}
+                    onChange={(event) =>
+                      setCustomer({ ...customer, phone: event.target.value })
+                    }
+                  />
+                </label>
+                <label>
+                  Email address
+                  <input
+                    autoComplete="email"
+                    type="email"
+                    maxLength={254}
+                    required
+                    value={customer.email}
+                    onChange={(event) =>
+                      setCustomer({ ...customer, email: event.target.value })
+                    }
+                  />
+                </label>
+                <button
+                  className="order-button"
+                  type="submit"
+                  disabled={reviewPending || unavailableItems.length > 0}
+                >
+                  <span>
+                    {reviewPending
+                      ? "Checking stock and prices…"
+                      : "Review order"}
+                  </span>
+                  <span>{money(total)}</span>
+                </button>
+              </form>
+            )
+          ) : (
+            <button className="order-button" onClick={() => setPage("profile")}>
+              <span>Sign in to place order</span>
+              <span>{money(total)}</span>
+            </button>
+          )}
           {checkoutError && (
             <p className="form-error" role="alert">
               {checkoutError}
@@ -1798,14 +2188,17 @@ function Basket({
 function AdminCreate({
   products,
   onCreated,
+  onStockUpdated,
 }: {
   products: Product[]
   onCreated: (product: Product) => void
+  onStockUpdated: (product: Product) => void
 }) {
   const [draft, setDraft] = useState({
     name: "",
     description: "",
     price: "",
+    stock: "0",
     category: "Outerwear",
     composition: "",
     tag: "",
@@ -1893,6 +2286,7 @@ function AdminCreate({
         name: "",
         description: "",
         price: "",
+        stock: "0",
         category: "Outerwear",
         composition: "",
         tag: "",
@@ -1958,6 +2352,22 @@ function AdminCreate({
                 required
               />
             </label>
+            <label>
+              Available stock
+              <input
+                type="number"
+                min="0"
+                max="1000000"
+                step="1"
+                value={draft.stock}
+                onChange={(event) =>
+                  setDraft({ ...draft, stock: event.target.value })
+                }
+                required
+              />
+            </label>
+          </div>
+          <div className="admin-form-row">
             <label>
               Category
               <select
@@ -2044,8 +2454,13 @@ function AdminCreate({
                   <b>{product.name}</b>
                   <span>{product.productCode}</span>
                   <small>
-                    {product.category} · {money(product.price)}
+                    {product.category} · {money(product.price)} ·{" "}
+                    {product.stock} in stock
                   </small>
+                  <ProductStockEditor
+                    product={product}
+                    onUpdated={onStockUpdated}
+                  />
                 </div>
               </article>
             ))
@@ -2069,6 +2484,79 @@ function AdminCreate({
   )
 }
 
+function ProductStockEditor({
+  product,
+  onUpdated,
+}: {
+  product: Product
+  onUpdated: (product: Product) => void
+}) {
+  const [stock, setStock] = useState(String(product.stock))
+  const [pending, setPending] = useState(false)
+  const [message, setMessage] = useState("")
+  const [error, setError] = useState("")
+
+  useEffect(() => setStock(String(product.stock)), [product.stock])
+
+  const save = async () => {
+    const quantity = Number(stock)
+    if (
+      !Number.isSafeInteger(quantity) ||
+      quantity < 0 ||
+      quantity > 1_000_000
+    ) {
+      setError("Stock must be a whole number from 0 to 1,000,000.")
+      setMessage("")
+      return
+    }
+    setPending(true)
+    setError("")
+    setMessage("")
+    try {
+      const updated = await api.updateProductStock(product.id, quantity)
+      onUpdated(updated)
+      setMessage("Stock saved.")
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Could not update stock.",
+      )
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <div className="stock-editor">
+      <label>
+        Available
+        <input
+          type="number"
+          min="0"
+          max="1000000"
+          step="1"
+          value={stock}
+          onChange={(event) => setStock(event.target.value)}
+        />
+      </label>
+      <button type="button" disabled={pending} onClick={save}>
+        {pending ? "Saving…" : "Update stock"}
+      </button>
+      {error && (
+        <small className="form-error" role="alert">
+          {error}
+        </small>
+      )}
+      {message && (
+        <small className="form-success" role="status">
+          {message}
+        </small>
+      )}
+    </div>
+  )
+}
+
 export default function App() {
   const [page, setPage] = useState<Page>(() =>
     window.location.hash === "#create" ? "create" : "main",
@@ -2078,6 +2566,12 @@ export default function App() {
   const [sort, setSort] = useState<SortKey>("featured")
   const [cart, setCart] = usePersistedCart()
   const [products, setProducts] = useState<Product[]>([])
+  const [availableCategories, setAvailableCategories] =
+    useState<ProductCategory[]>(
+      categories.filter(
+        (item): item is ProductCategory => item !== "All pieces",
+      ),
+    )
   const [productsLoading, setProductsLoading] = useState(true)
   const [productsError, setProductsError] = useState("")
   const [account, setAccount] = useState<Account | null>(null)
@@ -2087,7 +2581,6 @@ export default function App() {
   const [ordersLoading, setOrdersLoading] = useState(false)
   const [ordersError, setOrdersError] = useState("")
   const [placingOrder, setPlacingOrder] = useState(false)
-  const checkoutAttempt = useRef<CheckoutAttempt | null>(null)
   const [toast, setToast] = useState("")
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0)
 
@@ -2133,10 +2626,12 @@ export default function App() {
     let active = true
     void initializeApi()
       .then(async () => {
-        const [accountResult, productsResult] = await Promise.allSettled([
-          api.getCurrentAccount(),
-          api.getProducts(),
-        ])
+        const [accountResult, productsResult, categoriesResult] =
+          await Promise.allSettled([
+            api.getCurrentAccount(),
+            api.getProducts(),
+            api.getCategories(),
+          ])
         if (!active) return
         if (accountResult.status === "fulfilled") {
           setAccount(accountResult.value)
@@ -2154,6 +2649,15 @@ export default function App() {
             productsResult.reason instanceof Error
               ? productsResult.reason.message
               : "Could not load the product catalog.",
+          )
+        }
+        if (categoriesResult.status === "fulfilled") {
+          setAvailableCategories(categoriesResult.value)
+        } else {
+          setToast(
+            categoriesResult.reason instanceof Error
+              ? categoriesResult.reason.message
+              : "Could not load product categories.",
           )
         }
         setAuthLoading(false)
@@ -2248,8 +2752,16 @@ export default function App() {
       return
     }
     const key = cartKey(item.productId, item.color, item.size)
+    const existing = cart.find((entry) => entry.key === key)
+    const nextQuantity = (existing?.quantity ?? 0) + item.quantity
+    if (nextQuantity > Math.min(99, product.stock)) {
+      setToast(
+        `Only ${product.stock} ${product.name} item(s) are currently available.`,
+      )
+      return
+    }
     setCart(
-      cart.some((entry) => entry.key === key)
+      existing
         ? cart.map((entry) =>
             entry.key === key
               ? { ...entry, quantity: entry.quantity + item.quantity }
@@ -2298,50 +2810,39 @@ export default function App() {
     setAccount(updated)
   }
 
-  const placeOrder = async (): Promise<Order | null> => {
+  const requestOrderQuote = async (
+    customer: CheckoutCustomer,
+  ): Promise<StoreOrderQuote> => {
     if (!account) {
       navigate("profile")
       setToast("Sign in before placing an order.")
-      return null
+      throw new Error("Sign in before placing an order.")
     }
-    if (!cart.length || placingOrder) return null
-
-    const signature = JSON.stringify(
-      cart
-        .map(({ productId, color, size, quantity }) => ({
-          productId,
-          color,
-          size,
-          quantity,
-        }))
-        .sort((left, right) =>
-          `${left.productId}:${left.color}:${left.size}`.localeCompare(
-            `${right.productId}:${right.color}:${right.size}`,
-          ),
-        ),
+    if (!cart.length) throw new Error("Your basket is empty.")
+    const { quote } = await api.quoteOrder(
+      cart.map(({ productId, color, size, quantity }) => ({
+        productId,
+        color,
+        size,
+        quantity,
+      })),
+      customer,
     )
-    if (checkoutAttempt.current?.signature !== signature) {
-      checkoutAttempt.current = {
-        signature,
-        key: window.crypto.randomUUID(),
-      }
-    }
+    return quote
+  }
 
+  const placeOrder = async (quote: StoreOrderQuote): Promise<Order> => {
+    if (!account) {
+      navigate("profile")
+      throw new Error("Sign in before placing an order.")
+    }
     setPlacingOrder(true)
     try {
-      const { order } = await api.createOrder(
-        cart.map(({ productId, color, size, quantity }) => ({
-          productId,
-          color,
-          size,
-          quantity,
-        })),
-        checkoutAttempt.current.key,
-      )
+      const { order } = await api.createOrder(quote.token)
       setCart([])
       setOrders((previous) => [order, ...previous])
-      checkoutAttempt.current = null
       setToast(`Order ${order.id} submitted. No payment was taken.`)
+      void refreshProducts()
       return order
     } finally {
       setPlacingOrder(false)
@@ -2367,6 +2868,8 @@ export default function App() {
           products={products}
           productsLoading={productsLoading}
           productsError={productsError}
+          availableCategories={availableCategories}
+          onRetry={() => void refreshProducts()}
           openCatalog={openCatalog}
           openProduct={openProduct}
         />
@@ -2418,17 +2921,30 @@ export default function App() {
             setProducts((existing) => [product, ...existing])
             setToast(`${product.name} was added to the catalog.`)
           }}
+          onStockUpdated={(updated) => {
+            setProducts((existing) =>
+              existing.map((product) =>
+                product.id === updated.id ? updated : product,
+              ),
+            )
+          }}
         />
       )}
       {page === "basket" && (
         <Basket
           products={products}
           isLoggedIn={Boolean(account)}
+          customerDefaults={{
+            legalName: account?.displayName ?? "",
+            email: account?.email ?? "",
+            phone: account?.phone ?? "",
+          }}
           items={cart}
           setItems={setCart}
           setPage={navigate}
           openProduct={openProduct}
           placeOrder={placeOrder}
+          requestOrderQuote={requestOrderQuote}
           placingOrder={placingOrder}
         />
       )}
