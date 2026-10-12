@@ -73,7 +73,7 @@ function cookieOptions(maxAge) {
 
     secure: config.nodeEnv === "production",
 
-    sameSite: "strict",
+    sameSite: config.nodeEnv === "production" ? "none" : "strict",
 
     path: "/",
 
@@ -129,7 +129,7 @@ export function getCsrfToken(request, response) {
 
     secure: config.nodeEnv === "production",
 
-    sameSite: "strict",
+    sameSite: config.nodeEnv === "production" ? "none" : "strict",
 
     path: "/",
   })

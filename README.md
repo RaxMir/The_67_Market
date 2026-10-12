@@ -38,13 +38,15 @@ Edit `backend\.env`:
   ```
 
 - `INITIAL_LOGIN_PASSWORD`: the initial `user` and `admin` seed accounts share this password. Use a strong value for any non-disposable environment.
-- `FRONTEND_ORIGINS`: exact comma-separated frontend origins. The template includes the default local Vite origins.
+- `FRONTEND_ORIGINS`: exact comma-separated frontend origins. The template includes the default local Vite origins. For a separately deployed frontend, set this to its full origin, such as `https://your-store.onrender.com` (no trailing slash).
 - `PORT`: API port (default `3001`).
 - `UPLOAD_DIR`: product-image directory relative to `backend` unless an absolute path is supplied (default `uploads`).
 
 The backend reads settings from **`backend/.env`**. Keep it private: `.env` files are ignored by Git. Never put database credentials or session secrets in frontend code or commit them.
 
 Locally uploaded product images are stored in `backend/uploads/` and excluded from Git. Back them up separately or configure persistent/object storage before deploying; do not commit customer or product-upload files.
+
+For separate frontend and backend services, configure the frontend service's build-time environment variable `VITE_API_URL` to the backend's public origin, for example `https://your-api.onrender.com` (no trailing slash). Set `FRONTEND_ORIGINS` on the backend to the frontend's exact origin. The browser API uses credentialed cross-origin requests for session cookies; production cookies require HTTPS. Prefer frontend and API hostnames under the same site/domain because browsers may block cookies in cross-site contexts.
 
 ## Create database indexes and initial data
 

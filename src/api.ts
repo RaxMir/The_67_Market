@@ -75,6 +75,13 @@ export type OrderDraftItem = {
 
 let csrfToken = ""
 
+const apiBaseUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "")
+
+export function getApiUrl(path: string) {
+  if (/^https?:\/\//i.test(path)) return path
+  return `${apiBaseUrl}${path}`
+}
+
 async function readResponse<T>(response: Response): Promise<T> {
   if (response.status === 204) return undefined as T
   const payload = (await response.json().catch(() => null)) as {
@@ -109,8 +116,8 @@ async function readResponse<T>(response: Response): Promise<T> {
 async function loadCsrfToken(force = false) {
   if (csrfToken && !force) return csrfToken
 
-  const response = await fetch("/api/auth/csrf", {
-    credentials: "same-origin",
+  const response = await fetch(getApiUrl("/api/auth/csrf"), {
+    credentials: "include",
   })
 
   const data = await readResponse<{ token: string }>(response)
@@ -145,12 +152,12 @@ async function apiRequest<T>(
     headers.set("Content-Type", "application/json")
   }
 
-  const response = await fetch(path, {
+  const response = await fetch(getApiUrl(path), {
     ...options,
 
     headers,
 
-    credentials: "same-origin",
+    credentials: "include",
   })
 
   if (response.status === 403 && method !== "GET") {

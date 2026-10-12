@@ -8,6 +8,7 @@ import {
 } from "react"
 import {
   api,
+  getApiUrl,
   initializeApi,
   type Account,
   type ProductCategory,
@@ -489,7 +490,7 @@ function MainMenu({
               >
                 <span className="single-index">0{index + 1}</span>
                 <span className="single-thumb">
-                  <img src={product.images[0]} alt={product.name} />
+                  <img src={getApiUrl(product.images[0])} alt={product.name} />
                 </span>
                 <span className="single-copy">
                   <small>{product.tag}</small>
@@ -550,7 +551,7 @@ function ProductCard({
       onClick={onClick}
     >
       <div className="product-image-wrap">
-        <img src={product.images[0]} alt={product.name} />
+        <img src={getApiUrl(product.images[0])} alt={product.name} />
         {!compact && product.colors[0] && (
           <span className="product-color">{product.colors[0].name}</span>
         )}
@@ -789,7 +790,7 @@ function ProductDetail({
       />
       <section className="detail-grid">
         <div className="detail-photo">
-          <img src={product.images[imageIndex]} alt={product.name} />
+          <img src={getApiUrl(product.images[imageIndex])} alt={product.name} />
           <div className="photo-controls">
             <button
               aria-label="Previous image"
@@ -1688,7 +1689,7 @@ function Basket({
                   className="basket-thumb"
                   onClick={() => openProduct(product.id)}
                 >
-                  <img src={product.images[0]} alt={product.name} />
+                  <img src={getApiUrl(product.images[0])} alt={product.name} />
                 </button>
                 <div>
                   <span>
@@ -2038,7 +2039,7 @@ function AdminCreate({
           {products.length ? (
             products.map((product) => (
               <article className="admin-product-row" key={product.id}>
-                <img src={product.images[0]} alt="" />
+                <img src={getApiUrl(product.images[0])} alt="" />
                 <div>
                   <b>{product.name}</b>
                   <span>{product.productCode}</span>
