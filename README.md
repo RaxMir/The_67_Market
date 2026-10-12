@@ -54,9 +54,10 @@ For separate frontend and backend services, configure the frontend service's bui
 ```powershell
 corepack pnpm db:setup
 corepack pnpm db:seed
+corepack pnpm db:seed:products
 ```
 
-`db:setup` connects to the configured MongoDB database and initializes Mongoose models/indexes. Existing products without a stock field are migrated to zero available stock; an administrator can then enter inventory for each item. `db:seed` idempotently creates or updates `user` and `admin` with the shared configured password and their expected roles, and adds any missing sample products. Existing orders and products are preserved. Seed reruns reset the two initial account passwords to `INITIAL_LOGIN_PASSWORD`.
+`db:setup` connects to the configured MongoDB database and initializes Mongoose models/indexes. Existing products without a stock field are migrated to zero available stock; an administrator can then enter inventory for each item. `db:seed` idempotently creates or updates `user` and `admin` with the shared configured password and their expected roles, and adds any missing sample products across the clothing, accessories, gaming, and home-audio categories. `db:seed:products` adds only missing sample products and does not modify account passwords. Both seed commands include starter inventory and illustrative product photos hosted by Unsplash; existing orders, products, and product inventory are preserved. The full `db:seed` command resets the two initial account passwords to `INITIAL_LOGIN_PASSWORD`. The product-only command requires an existing admin account.
 
 Public registration creates only `user` accounts. Administrator access is assigned by the seed or directly by a trusted database administrator; the API never accepts a role from the browser.
 
