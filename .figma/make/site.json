@@ -1,0 +1,10 @@
+{
+  "description": "Enables users to browse, filter, and order products with detailed views, access support, and manage their profile in a seamless shopping experience.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
