@@ -121,8 +121,8 @@ app.use("/api", (request, response, next) => {
 
 app.use(errorHandler)
 
-const server = app.listen(config.port, "127.0.0.1", () => {
-  console.log(`API listening on http://127.0.0.1:${config.port}`)
+const server = app.listen(config.port, "0.0.0.0", () => {
+  console.log(`API listening on port ${config.port}`)
 })
 
 void connectDatabase()
